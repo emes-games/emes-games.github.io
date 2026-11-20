@@ -1,21 +1,49 @@
 (() => {
   'use strict';
 
-  // ---- Constants (matching WSJ's 360p pixel-art scale) ----
+  // ---- Constants (matching WSJ's 360p pixel-art scale & exact geometry) ----
   const SCREEN_H = 360;
   const BASE_SCREEN_W = 640;
   const MIN_SCREEN_W = 280;
   const MAX_SCREEN_W = 960;
   const ZOOM = 8.0;
-  const JUMPER_SIZE = 1.0;
-  const SKI_LEN = 2.6;
-  const SKI_TAIL = 1.1;
-  const DECK_DEPTH = 0.72;
-  const GIRDER_DEPTH = 2.4;
-  const PILLAR_GAP = 18.0;
+  const JUMPER_SIZE = 1.7;
+  const SKI_LEN = 2.4;
+  const SKI_TAIL = 0.95;
+  const SHIN_LEN = 0.47;
+  const THIGH_LEN = 0.47;
+  const TORSO_LEN = 0.58;
+  const NECK_LEN = 0.25;
+  const ARM_LEN = 0.60;
+  const DECK_DEPTH = 1.0;
+  const GIRDER_DEPTH = 2.6;
+  const PILLAR_GAP = 24.0;
   const BOARD_LEN = 4.0;
-  const TAKEOFF_WIDTH = 7.0;
+  const TAKEOFF_WIDTH = 12.0;
   const DEG = Math.PI / 180;
+
+  // Exact WSJ flight & pose timing constants
+  const START_OPEN = 68.0;
+  const BEST_OPEN = 20.0;
+  const OVER_LEAN = 11.0;
+  const MIN_OPEN = -25.0;
+  const OPEN_GAIN = 2.6;
+  const BEST_PITCH = -2.0;
+  const SKI_LAG = 0.18;
+  const DRAWN_STANDING = 80.0;
+  const DRAWN_BEST = 15.0;
+  const DRAWN_EDGE = 7.0;
+  const DRAWN_TUMBLED = -70.0;
+  const POP_TIME = 0.07;
+  const POP_HOLD = 0.22;
+  const POP_BLEND = 0.55;
+  const PREP_TIME = 0.30;
+  const LAND_SETTLE = 0.30;
+  const LAND_DIP = 0.16;
+  const LAND_HOLD = 1.0;
+  const LAND_RISE = 0.55;
+  const REACT_AT = 1.8;
+  const HOP_EVERY = 0.6;
 
   // ---- Color utilities (little-endian ABGR for Uint32Array ImageData) ----
   const rgb = (hex) => ({
@@ -62,7 +90,9 @@
 
   const SNOW_DUST = rgb(0xf4f8ff);
   const SPARK_GOLD = rgb(0xffe066);
-  const TRAIL_COL = rgb(0x9fe0b0);
+  const TRAIL_NEUTRAL = rgb(0xf2f5fa);
+  const TRAIL_GOOD = rgb(0x6fe08a);
+  const OUTLINE_COL = rgb(0x141a2c);
 
   // ---- WSJ 4x4 Bayer Dithering Matrix ----
   const BAYER = [
@@ -300,8 +330,10 @@
   ];
 
   const SUIT_COLORS = [
-    0xd94a4a, 0x2f6fd6, 0xe8b838, 0x35a45c, 0xe87a2a, 0x8d52c4, 0x26a69a, 0xd84374,
+    0xd93838, 0x2f6fd6, 0xe8b838, 0x2f9e58, 0xe87a2a, 0x8d52c4, 0x26a69a, 0xd84374,
   ];
+  const HELMET_COLORS = [0xf2c94c, 0xf2f5fa, 0xe84848, 0x4a90e2, 0xf2f5fa];
+  const SKI_COLORS = [0xf29028, 0xf2b830, 0xd93838, 0x303848, 0x3a82d8];
   const BOARD_COLORS = [0x2c5fb4, 0x9a2a3a, 0x2f8f58, 0x2a2f3c, 0xe8862a];
   const SHIRT_COLORS = [0xd94a4a, 0x4a7fd9, 0xe8c84a, 0x58b368, 0xf0f0f0, 0x9a5fc0, 0xe88a3a, 0x40464f];
   const FLAG_COLORS = [0xd94a4a, 0xf0f0f0, 0x4a7fd9, 0xe8c84a, 0x58b368, 0xe88a3a];
@@ -1228,6 +1260,10 @@
     knee: v2(0.32, 0.36), hip: v2(-0.12, 0.50), sh: v2(-0.02, 1.06),
     head: v2(0.02, 1.30), hand: v2(-0.18, 0.50),
   });
+  const POSE_REACH = makePose({
+    knee: v2(0.34, 0.36), hip: v2(0.00, 0.48), sh: v2(0.50, 0.84),
+    head: v2(0.68, 0.97), hand: v2(-0.34, 0.50),
+  });
   const POSE_CROUCH = makePose({
     knee: v2(0.36, 0.33), hip: v2(-0.12, 0.41), sh: v2(0.45, 0.54),
     head: v2(0.69, 0.57), hand: v2(-0.14, 0.62),
@@ -1259,20 +1295,65 @@
     head: v2(0.08, 1.75), hand: v2(0.42, 2.04), hand2: v2(-0.26, 2.04),
   });
 
-  function flightPose(bodyAngle) {
-    const d = dirV(bodyAngle);
-    const up = v2(-d.y, d.x);
-    const knee = scaleV(d, 0.46);
-    const hip = scaleV(d, 0.93);
-    const sh = scaleV(d, 1.50);
-    const head = addV(scaleV(d, 1.75), scaleV(up, 0.04));
-    const hand = addV(scaleV(d, 0.96), scaleV(up, -0.14));
-    const hand2 = addV(scaleV(d, 0.94), scaleV(up, -0.05));
-    return makePose({ knee, hip, knee2: knee, sh, head, hand, hand2 });
+  function clonePose(p) {
+    return {
+      foot: v2(p.foot.x, p.foot.y),
+      knee: v2(p.knee.x, p.knee.y),
+      hip: v2(p.hip.x, p.hip.y),
+      foot2: v2(p.foot2.x, p.foot2.y),
+      knee2: v2(p.knee2.x, p.knee2.y),
+      sh: v2(p.sh.x, p.sh.y),
+      head: v2(p.head.x, p.head.y),
+      hand: v2(p.hand.x, p.hand.y),
+      hand2: v2(p.hand2.x, p.hand2.y),
+    };
+  }
+
+  // Exact shapeFor(lean) from jumper_draw.cpp
+  function shapeFor(lean) {
+    let body = DRAWN_BEST;
+    let v = 1.0;
+    let dive = 0.0;
+    if (lean >= BEST_OPEN) {
+      const f = clamp((lean - BEST_OPEN) / (START_OPEN - BEST_OPEN), 0, 1);
+      body = DRAWN_BEST + f * (DRAWN_STANDING - DRAWN_BEST);
+      v = 1.0 - f;
+    } else if (lean >= OVER_LEAN) {
+      const f = (lean - OVER_LEAN) / (BEST_OPEN - OVER_LEAN);
+      body = DRAWN_EDGE + f * (DRAWN_BEST - DRAWN_EDGE);
+      v = 1.0;
+    } else {
+      dive = clamp((OVER_LEAN - lean) / (OVER_LEAN - MIN_OPEN), 0, 1);
+      body = DRAWN_EDGE + dive * (DRAWN_TUMBLED - DRAWN_EDGE);
+      v = 1.0;
+    }
+    return { body: body * DEG, v, dive };
+  }
+
+  // Exact flightPose(sh) from jumper_draw.cpp
+  function flightPose(sh) {
+    const hips = 4.0 * DEG * clamp(sh.body / (DRAWN_BEST * DEG), -1, 1);
+    const leg = dirV(sh.body - hips);
+    const torso = sh.body + hips;
+    const knee = scaleV(leg, SHIN_LEN);
+    const hip = scaleV(leg, SHIN_LEN + THIGH_LEN);
+    const shPt = addV(hip, scaleV(dirV(torso), TORSO_LEN));
+    const head = addV(shPt, scaleV(dirV(torso + 4.0 * DEG), NECK_LEN));
+    const up = clamp((sh.body - 30.0 * DEG) / (40.0 * DEG), 0, 1);
+    const back = torso + Math.PI + 8.0 * DEG;
+    let hand = addV(shPt, scaleV(dirV(back - up * 105.0 * DEG), ARM_LEN));
+    let hand2 = addV(shPt, scaleV(dirV(back + up * 60.0 * DEG), ARM_LEN));
+    if (sh.dive > 0) {
+      const ahead = addV(shPt, scaleV(dirV(torso - 25.0 * DEG), ARM_LEN));
+      hand = lerpV(hand, ahead, sh.dive);
+      hand2 = lerpV(hand2, addV(shPt, scaleV(dirV(torso + 35.0 * DEG), ARM_LEN)), sh.dive);
+    }
+    return makePose({ knee, hip, knee2: knee, sh: shPt, head, hand, hand2 });
   }
 
   function lerpPose(a, b, t) {
-    const k = clamp(t, 0, 1);
+    const raw = clamp(t, 0, 1);
+    const k = raw * raw * (3 - 2 * raw);
     return {
       foot: lerpV(a.foot, b.foot, k),
       knee: lerpV(a.knee, b.knee, k),
@@ -1286,58 +1367,114 @@
     };
   }
 
+  function reactionPose(dist, hill, t) {
+    if (dist >= hill.HS) {
+      const p = clonePose(POSE_CHEER);
+      const hopT = t - 0.25;
+      if (hopT > 0) {
+        const ph = (hopT % HOP_EVERY) / HOP_EVERY;
+        if (ph < 0.3) {
+          const sq = 0.12 * Math.sin((Math.PI * ph) / 0.3);
+          for (const k of ['hip', 'sh', 'head', 'hand', 'hand2']) p[k].y -= sq;
+          p.knee.x += 0.6 * sq; p.knee2.x += 0.6 * sq;
+          p.knee.y -= 0.4 * sq; p.knee2.y -= 0.4 * sq;
+        } else {
+          const up = 0.38 * Math.sin((Math.PI * (ph - 0.3)) / 0.7);
+          for (const k of ['foot', 'knee', 'hip', 'foot2', 'knee2', 'sh', 'head', 'hand', 'hand2']) {
+            p[k].y += up;
+          }
+          p.hand.y += 0.4 * up;
+          p.hand2.y += 0.4 * up;
+        }
+      }
+      return p;
+    }
+    return POSE_CHEER;
+  }
+
   function drawJumper(c, cam, jump, kit, tick) {
-    // Ground shadow during flight
+    // Ground shadow during flight (green when low enough for telemark, just like WSJ)
     if (jump.phase === 'flight') {
       const gx = Math.floor(cam.sx(jump.x));
       const gy = Math.floor(cam.sy(jump.hill.groundY(jump.x)));
       const hAbove = Math.max(0, jump.y - jump.hill.groundY(jump.x));
       const sw = Math.floor(clamp(14 - hAbove * 0.8, 4, 14));
-      const shade = rgb(0x203050);
+      let shade = rgb(0x203050);
+      let a = 0.35;
+      if (jump.prepT === 0 && hAbove <= 3.0 && jump.x > 0) {
+        shade = rgb(0x18c060);
+        a = 0.75;
+      }
       for (let i = -sw; i <= sw; i++) {
-        c.blend(gx + i, gy, shade, 0.35);
-        c.blend(gx + i, gy + 1, shade, 0.21);
+        c.blend(gx + i, gy, shade, a);
+        c.blend(gx + i, gy + 1, shade, a * 0.6);
       }
     }
 
-    // Determine pose & ski V-opening
+    // Exact WSJ currentPose & ski V-opening
     let pose = POSE_CROUCH;
     let farTilt = 0, nearTilt = 0, bend = 0;
     let ang = jump.pitch;
 
     if (jump.phase === 'gate') {
-      pose = POSE_SIT;
+      pose = clonePose(POSE_SIT);
+      const breath = 0.012 * Math.sin(tick * 0.07);
+      pose.sh.y += breath;
+      pose.head.y += breath * 1.5;
+      const ph = tick % 320;
+      if (ph < 56) {
+        pose.hand = lerpV(pose.hand, addV(pose.head, v2(0.17, 0.02)), Math.sin((Math.PI * ph) / 56));
+      }
     } else if (jump.phase === 'inrun') {
-      pose = lerpPose(POSE_SIT, POSE_CROUCH, jump.phaseT / 0.25);
+      const t = jump.phaseT;
+      if (t < 0.16) pose = lerpPose(POSE_SIT, POSE_REACH, t / 0.16);
+      else if (t < 0.50) pose = lerpPose(POSE_REACH, POSE_CROUCH, (t - 0.16) / 0.34);
+      else if (t < 0.80) {
+        pose = clonePose(POSE_CROUCH);
+        const d = 0.05 * Math.sin((Math.PI * (t - 0.50)) / 0.30);
+        pose.hip.y -= d; pose.sh.y -= d * 1.2; pose.head.y -= d * 1.2;
+        pose.hand.y -= d; pose.hand2.y -= d;
+      } else {
+        pose = POSE_CROUCH;
+      }
     } else if (jump.phase === 'flight') {
       const t = jump.phaseT;
-      const fly = flightPose(jump.bodyAngle);
-      if (t < 0.14) pose = lerpPose(POSE_CROUCH, POSE_PUSH, t / 0.14);
-      else if (t < 0.24) pose = POSE_PUSH;
-      else pose = lerpPose(POSE_PUSH, fly, (t - 0.24) / 0.36);
+      const sh = shapeFor(jump.open);
+      const fly = flightPose(sh);
+      if (t < POP_TIME) pose = lerpPose(POSE_CROUCH, POSE_PUSH, t / POP_TIME);
+      else if (t < POP_HOLD) pose = POSE_PUSH;
+      else pose = lerpPose(POSE_PUSH, fly, (t - POP_HOLD) / (POP_BLEND - POP_HOLD));
 
-      let vIn = clamp((t - 0.24) / 0.36, 0, 1);
+      let vIn = clamp((t - POP_HOLD) / (POP_BLEND - POP_HOLD), 0, 1);
       if (jump.prepT > 0) {
-        const pf = clamp(jump.prepT / 0.28, 0, 1);
+        const pf = clamp(jump.prepT / PREP_TIME, 0, 1);
         pose = lerpPose(pose, POSE_PREP, pf);
         vIn *= 1 - pf;
       }
-      const wobble = 3.5 * DEG * Math.exp(-t / 0.55) * Math.sin(2 * Math.PI * 5.2 * t);
-      farTilt = 6 * DEG * vIn - wobble * 0.6;
-      nearTilt = -13 * DEG * vIn + wobble;
-      bend = 5 * DEG * vIn;
+      const v = sh.v * vIn;
+      const dive = sh.dive * vIn;
+      const wobble = (9 - 4 * jump.takeoffQ) * DEG * Math.exp(-t / 0.55) * Math.sin(2 * Math.PI * 5.5 * t);
+      farTilt = 6 * DEG * v + 46 * DEG * dive - wobble * 0.7;
+      nearTilt = -13 * DEG * v + 43 * DEG * dive + wobble;
+      bend = 5 * DEG * v + 55 * DEG * dive;
+      ang -= 18 * DEG * dive;
     } else {
-      // Outrun / done
+      // Outrun / done (exact WSJ touchdown settle + dip + arm sway + stand + reaction)
       const t = jump.outrunT;
       ang += 3 * DEG * Math.exp(-t / 0.06);
-      pose = lerpPose(POSE_PREP, POSE_TELEMARK, t / 0.14);
-      const k = t / 0.16;
-      pose = lerpPose(pose, POSE_TELE_DEEP, 0.6 * k * Math.exp(1 - k));
-      if (t > 1.05) {
-        pose = lerpPose(pose, POSE_STAND, (t - 1.05) / 0.45);
+      const from = lerpPose(flightPose(shapeFor(jump.open)), POSE_PREP, clamp(jump.prepT / PREP_TIME, 0, 1));
+      pose = lerpPose(from, POSE_TELEMARK, t / LAND_SETTLE);
+      const depth = 0.65;
+      const k = t / LAND_DIP;
+      pose = lerpPose(pose, POSE_TELE_DEEP, depth * k * Math.exp(1 - k));
+      const sway = 0.07 * depth * Math.sin(t * 13) * Math.exp(-t / 0.35) * clamp(t / 0.08, 0, 1);
+      pose.hand.y += sway;
+      pose.hand2.y -= 0.7 * sway;
+      if (t > LAND_HOLD) {
+        pose = lerpPose(pose, POSE_STAND, (t - LAND_HOLD) / LAND_RISE);
       }
-      if (t > 1.75) {
-        pose = lerpPose(pose, POSE_CHEER, (t - 1.75) / 0.35);
+      if (t > REACT_AT) {
+        pose = lerpPose(pose, reactionPose(jump.landDist, jump.hill, t - REACT_AT), (t - REACT_AT) / 0.35);
       }
     }
 
@@ -1350,7 +1487,7 @@
       oy - (v.x * sa + v.y * ca) * JUMPER_SIZE * ZOOM,
     ];
 
-    const outline = rgb(0x141a2c);
+    const outline = OUTLINE_COL;
     const far = mix(kit.suit, outline, 0.45);
     const light = mix(kit.suit, rgb(0xffffff), 0.28);
     const boot = rgb(0x2a2f3c);
@@ -1435,11 +1572,11 @@
       this.hill = new Hill(spec);
       this.scen = new Scenery(this.hill);
       this.rng = rng;
-      this.wind = -0.6 + rng() * 2.8;
+      this.wind = -0.5 + rng() * 2.6;
       this.kit = {
         suit: rgb(SUIT_COLORS[Math.floor(rng() * SUIT_COLORS.length)]),
-        helmet: rgb(0xf0f0f0),
-        skis: rgb(rng() < 0.45 ? 0xf2a830 : 0x303848),
+        helmet: rgb(HELMET_COLORS[Math.floor(rng() * HELMET_COLORS.length)]),
+        skis: rgb(SKI_COLORS[Math.floor(rng() * SKI_COLORS.length)]),
       };
 
       const startPt = this.hill.inrunPoint(this.hill.gateU);
@@ -1457,30 +1594,33 @@
         vy: 0,
         speed: 0,
         pitch: -startPt.slope,
-        bodyAngle: 26 * DEG,
+        open: START_OPEN,
+        takeoffQ: 0.92,
+        landDist: 0,
       };
 
       this.gateWait = 0.55 + rng() * 0.35;
       this.takeoffSkill = 0.85 + rng() * 0.15;
+      this.takeoffMarkU = null;
       this.particles = [];
       this.trail = [];
       this.tick = 0;
       this.rest = 0;
 
-      // Camera starts centered on the jumper, framing them in the lower-middle
-      // so the EMES GAMES / COMING SOON banner floats cleanly in the sky above.
+      // Camera frames the jumper in the lower-middle so the Emes Games card
+      // floats cleanly in the sky above without ever overlapping the jumper.
       this.cam = this.camTarget();
     }
 
     camTarget() {
       const j = this.jump;
-      let ahead = 10.0, below = -5.5;
+      let ahead = 14.0, below = -3.5;
       if (j.phase === 'flight') {
-        ahead = 14.0;
-        below = -4.5;
+        ahead = 18.0;
+        below = -1.0;
       } else if (j.phase === 'outrun' || j.phase === 'done') {
-        ahead = 9.0;
-        below = -6.0;
+        ahead = 11.0;
+        below = -3.0;
       }
       return {
         x: j.x + ahead,
@@ -1515,30 +1655,32 @@
         }
       } else if (j.phase === 'inrun') {
         const pt = h.inrunPoint(j.u);
-        // Realistic inrun acceleration (~92-95 km/h = 26 m/s at edge)
         const acc = 9.81 * Math.sin(pt.slope) - 0.0014 * j.speed * j.speed - 0.22;
         j.speed = Math.max(2.0, j.speed + acc * dt);
         j.u -= j.speed * dt;
-        if (j.u <= 0.45) {
-          // Takeoff!
-          const edge = h.inrunPoint(0);
+        const pushAt = 0.5 + (1 - this.takeoffSkill) * 2.2;
+        if (j.u <= pushAt) {
+          // Takeoff! (matches Jump::takeOff in jumper.cpp)
+          const edge = h.inrunPoint(Math.max(0, j.u));
+          this.takeoffMarkU = Math.max(0, j.u);
           j.phase = 'flight';
           j.phaseT = 0;
           j.x = edge.x;
           j.y = edge.y + 0.05;
-          const popV = 3.1 + 1.3 * this.takeoffSkill;
-          j.vx = j.speed * Math.cos(edge.slope);
-          j.vy = -j.speed * Math.sin(edge.slope) + popV;
-          j.pitch = Math.atan2(j.vy, j.vx) * 0.45;
-          j.bodyAngle = 22 * DEG;
+          j.takeoffQ = clamp(0.8 + 0.2 * this.takeoffSkill, 0.7, 1.0);
+          const popV = 3.1 + 1.4 * this.takeoffSkill;
+          j.vx = j.speed * Math.cos(edge.slope) + popV * Math.sin(edge.slope);
+          j.vy = -j.speed * Math.sin(edge.slope) + popV * Math.cos(edge.slope);
+          j.pitch = -edge.slope;
+          j.open = START_OPEN;
 
           // Takeoff snow burst + golden sparks
-          for (let i = 0; i < 26; i++) {
+          for (let i = 0; i < 30; i++) {
             this.emit(j.x - this.rng() * 1.2, j.y + this.rng() * 0.3, j.vx * (0.1 + 0.45 * this.rng()), 0.5 + this.rng() * 7.5, 0.3 + 0.55 * this.rng(), SNOW_DUST, this.rng() < 0.4);
           }
-          for (let i = 0; i < 18; i++) {
+          for (let i = 0; i < 20; i++) {
             const a = this.rng() * Math.PI * 2;
-            this.emit(j.x, j.y + 0.8, j.vx * 0.65 + 6.5 * Math.cos(a), j.vy + 6.5 * Math.sin(a), 0.32 + 0.28 * this.rng(), SPARK_GOLD, true);
+            this.emit(j.x, j.y + 0.8, j.vx * 0.65 + 6.8 * Math.cos(a), j.vy + 6.8 * Math.sin(a), 0.34 + 0.28 * this.rng(), SPARK_GOLD, true);
           }
         } else {
           const np = h.inrunPoint(j.u);
@@ -1547,14 +1689,12 @@
           j.pitch = -np.slope;
         }
       } else if (j.phase === 'flight') {
-        // Aerodynamic lift & drag tuned for ~115-140m ski jumps
         const speed = Math.hypot(j.vx, j.vy);
         const airSpeed = speed + this.wind * 0.8;
         const lift = 0.0086 * airSpeed * airSpeed * (0.92 + 0.14 * this.takeoffSkill);
         const drag = 0.0044 * airSpeed * airSpeed;
         const flightDir = Math.atan2(j.vy, j.vx);
 
-        // Lift acts perpendicular to velocity, drag opposite
         const ax = -drag * Math.cos(flightDir) - lift * Math.sin(flightDir);
         const ay = -9.81 - drag * Math.sin(flightDir) + lift * Math.cos(flightDir);
 
@@ -1563,32 +1703,42 @@
         j.x += j.vx * dt;
         j.y += j.vy * dt;
 
-        const targetPitch = clamp(flightDir * 0.52 + 0.14, -0.35, 0.18);
-        j.pitch += (targetPitch - j.pitch) * (1 - Math.exp(-dt * 4.5));
-        const targetBody = 17 * DEG;
-        j.bodyAngle += (targetBody - j.bodyAngle) * (1 - Math.exp(-dt * 3.0));
-
         const ground = h.landAtX(j.x);
         const heightAbove = j.y - ground.y;
-        if (heightAbove < 4.5 && j.x > 25) {
+        const landing = heightAbove < 3.4 && j.x > 25;
+
+        if (!landing && j.prepT === 0) {
+          // Lay smoothly from START_OPEN (68 deg) down to BEST_OPEN (20 deg) like WSJ's AI pilot
+          const layTarget = BEST_OPEN + 1.5 * Math.sin(j.phaseT * 2.2);
+          if (j.phaseT > 0.12) {
+            j.open += (layTarget - j.open) * (1 - Math.exp(-dt * 2.8));
+          }
+          // Exact WSJ ski pitch tracking from jumper.cpp
+          const targetPitch = (BEST_PITCH + (j.open - BEST_OPEN) / OPEN_GAIN) * DEG;
+          j.pitch += (targetPitch - j.pitch) * (1 - Math.exp(-dt / SKI_LAG));
+        } else {
           j.prepT += dt;
+          const targetPitch = ground.slope + 3.0 * DEG;
+          j.pitch += (targetPitch - j.pitch) * (1 - Math.exp(-dt / 0.10));
         }
 
-        if (this.tick % 2 === 0 && j.phaseT > 0.22) {
-          this.trail.push({ x: j.x - 0.6, y: j.y + 0.4, life: 0.75, maxLife: 0.75 });
-          if (this.trail.length > 48) this.trail.shift();
+        // Exact WSJ dotted flight trail
+        if (this.tick % 2 === 0) {
+          const good = j.phaseT > 0.65 && j.open < BEST_OPEN + 12 && j.prepT === 0;
+          this.trail.push({ x: j.x, y: j.y + 0.6, col: good ? TRAIL_GOOD : TRAIL_NEUTRAL });
+          if (this.trail.length > 90) this.trail.shift();
         }
 
         if (j.y <= ground.y) {
           j.y = ground.y;
           j.s = ground.s;
+          j.landDist = ground.s;
           j.phase = 'outrun';
           j.phaseT = 0;
           j.outrunT = 0;
           j.speed = Math.hypot(j.vx, j.vy) * 0.92;
           j.pitch = ground.slope;
-          // Landing snow spray
-          for (let i = 0; i < 30; i++) {
+          for (let i = 0; i < 32; i++) {
             this.emit(
               j.x - 0.5 + this.rng() * 1.2,
               j.y + 0.1,
@@ -1601,7 +1751,6 @@
           }
         }
       } else {
-        // Outrun glide to stop
         j.outrunT += dt;
         const lp = h.landPoint(j.s);
         const brake = j.s > h.outrunS ? 8.5 : 1.4;
@@ -1613,7 +1762,7 @@
         j.y = np.y;
         j.pitch = np.slope;
 
-        if (j.speed > 5 && this.tick % 2 === 0) {
+        if (j.speed > 4 && this.tick % 2 === 0) {
           this.emit(j.x - 0.6, j.y + 0.05, -2 + this.rng() * 3, 0.5 + this.rng() * 2, 0.25 + 0.25 * this.rng(), SNOW_DUST, false);
         }
         if (j.speed < 0.2 || j.outrunT > 3.2) {
@@ -1622,7 +1771,7 @@
         }
       }
 
-      // Update particles
+      // Update particles (matching effects.cpp)
       for (let i = this.particles.length - 1; i >= 0; i--) {
         const pt = this.particles[i];
         pt.life -= dt;
@@ -1630,15 +1779,10 @@
           this.particles.splice(i, 1);
           continue;
         }
-        pt.vy -= 9.81 * 0.7 * dt;
+        pt.vy -= 7.0 * dt;
+        pt.vx *= 0.97;
         pt.x += pt.vx * dt;
         pt.y += pt.vy * dt;
-      }
-
-      // Update flight trail
-      for (let i = this.trail.length - 1; i >= 0; i--) {
-        this.trail[i].life -= dt;
-        if (this.trail[i].life <= 0) this.trail.splice(i, 1);
       }
 
       // Smooth exponential camera tracking
@@ -1656,14 +1800,29 @@
       this.cam._w = c.w;
       this.scen.drawWorld(c, this.cam);
 
-      // Subtle flight trail dots (like WSJ)
+      // Exact WSJ dotted '+' flight trail behind jumper (from effects.cpp)
       for (let i = 0; i < this.trail.length; i++) {
         const tr = this.trail[i];
-        const a = (tr.life / tr.maxLife) * 0.55;
         const tx = Math.floor(this.cam.sx(tr.x));
         const ty = Math.floor(this.cam.sy(tr.y));
-        c.blend(tx, ty, TRAIL_COL, a);
-        c.blend(tx + 1, ty, TRAIL_COL, a * 0.6);
+        if (tx < -4 || tx > c.w + 4 || ty < -4 || ty > c.h + 4) continue;
+        c.fillRect(tx - 1, ty - 1, 3, 3, OUTLINE_COL);
+        c.set(tx, ty, tr.col);
+        c.set(tx - 1, ty, tr.col);
+        c.set(tx + 1, ty, tr.col);
+        c.set(tx, ty - 1, tr.col);
+        c.set(tx, ty + 1, tr.col);
+      }
+
+      // Takeoff pennant flag at takeoff spot (from effects.cpp)
+      if (this.takeoffMarkU !== null) {
+        const mp = this.hill.inrunPoint(this.takeoffMarkU);
+        const mx = Math.floor(this.cam.sx(mp.x));
+        const my = Math.floor(this.cam.sy(mp.y));
+        if (mx > -20 && mx < c.w + 20) {
+          c.vLine(mx, my - 16, my, OUTLINE_COL);
+          c.fillTri(mx + 1, my - 16, mx + 1, my - 9, mx + 9, my - 12, UI_GOLD);
+        }
       }
 
       drawJumper(c, this.cam, this.jump, this.kit, this.tick);
@@ -1671,7 +1830,7 @@
       // Snow dust & takeoff sparks
       for (let i = 0; i < this.particles.length; i++) {
         const pt = this.particles[i];
-        const a = clamp(pt.life / pt.maxLife, 0, 1);
+        const a = 0.9 * clamp(pt.life / pt.maxLife, 0, 1);
         const px = Math.floor(this.cam.sx(pt.x));
         const py = Math.floor(this.cam.sy(pt.y));
         c.blend(px, py, pt.col, a);
