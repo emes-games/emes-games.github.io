@@ -1785,7 +1785,6 @@
     if (fade > 0.005) {
       pxCanvas.blendRect(0, 0, pxCanvas.w, pxCanvas.h, UI_INK, fade);
     }
-    drawOverlay(pxCanvas, elapsed);
     pxCanvas.present();
 
     requestAnimationFrame(frame);
